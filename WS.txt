@@ -1,0 +1,187 @@
+import random # Для сохранения скриншота с отрисовкой контура
+import cv2 # OpenCV
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge # Для взятия  скриншота
+
+bridge = CvBridge()
+
+dict_flag, i, detect_flag = [], -1, True
+def flag_detect():
+    global dict_flag, i, detect_flag
+    imgg = bridge.imgmsg_to_cv2(rospy.wait_for_message('main_camera/image_raw_throttled', Image), 'bgr8')
+    # Берем скриншот из топика камеры, если же у вас нет ноды тротла, то уберите его
+
+    dict_flag.append([[0,0,0], [0,0,0]]) # Для того, чтобы значение отдельного цвета считать в массив
+    
+    if detect_flag:
+        detect_flag = False
+        i += 1 # Увеличиваем значение нашего массиваа
+
+    img = cv2.cvtColor(imgg, cv2.COLOR_BGR2HSV)
+    
+    # Распознавание красного
+    frame = cv2.inRange(img, (0, 89, 150), (15, 255, 255)) # Мин/Макс значения по красному
+    cnt = cv2.findContours(frame, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+    # Для нахождения конутров самого цвета
+    try: 
+        for c in cnt:
+            moments = cv2.moments(c, 1) # Считаем каждый пиксель с фотки       
+            sum_pixel = moments['m00'] # Сумма пикселей
+            if sum_pixel > 10: # Если пикселей с красным больше 10, то будет считать, проверка
+                dict_flag[i][0] = [sum_pixel, int(moments['m10'] / sum_pixel), int(moments['m01'] / sum_pixel)]
+                # Считаем значение самого HSV; m10 - по оси x, где m01 - по оси y
+                detect_flag = True
+                cv2.drawContours(imgg, [c], 0, (255,255,255), 3) # Рисуем контуры, для откладки на фото
+    except:
+        pass
+
+    # Распознавание желтого цвета 
+    frame = cv2.inRange(img, (25, 150, 200), (35, 255, 255)) # Мин/Макс значения по желтому
+    cnt = cv2.findContours(frame, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+    try: 
+        for c in cnt:
+            moments = cv2.moments(c, 1)       
+            sum_pixel = moments['m00']
+            if sum_pixel > 10:
+                dict_flag[i][1] = [sum_pixel, int(moments['m10'] / sum_pixel), int(moments['m01'] / sum_pixel)]
+                detect_flag = True
+                cv2.drawContours(imgg, [c], 0, (0,0,0), 3)
+    except:
+        pass
+    
+    print(dict_flag) # Вывод итогового HSV значения каждого цвета
+    
+    cv2.imwrite("/home/clover/image{0}.png".format(random.randint(0,1000)), imgg)
+    # Для сохранения фотки где будет храниться контур отрисованный
+
+
+
+
+
+
+
+1 color
+---------------------
+from cv_bridge import CvBridge # Чтобы брать изображение
+from sensor_msgs.msg import Image # Для топика камеры
+import cv2 # OpenCV
+
+bridge = CvBridge()
+
+color = 'error' # Инициализируем наш текст
+def color_callback(data):
+    global color # Делаем ее глобальной, чтобы потом можно было вызвать из любого места
+    cv_image = bridge.imgmsg_to_cv2(data, 'bgr8') # Берем изображение из топика камеры
+    img_hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)[119:120, 159:160]
+    # Самое последнее, где 119... это пиксель центра камеры
+    
+    # От симулятора и в жизни могут отличаться значения
+    red_low_value = (0, 150, 200) # Минимальное примерное
+    red_high_value = (10, 255, 255) # Максимальное примерное
+    
+    # Вы можете просто брать среднее арифметическое самого цвета, где 1 параметр вы можете
+    # добавить и убавить в 1 параметры по 10 едениц, а 2 и 3 от 30 до 50, в самом где (..., ..., )
+    
+    # В каких областях будет детектиться цвет
+    red_final = cv2.inRange(img_hsv, red_low_value, red_high_value)
+    
+    # Если он находится в таких значениях, то выводит, что это красный цвет
+    if red_final[0][0] == 255:
+        color = 'red'
+    else:
+        color = 'error'
+
+# Нужно добавить ноду image_raw_throttled, иначе используйте image_raw
+image_sub = rospy.Subscriber("main_camera/image_raw_throttled", Image, color_callback)
+
+
+
+QR
+------------------------
+import rospy
+from clover import srv
+from std_srvs.srv import Trigger
+from clover.srv import SetLEDEffect
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+from pyzbar import pyzbar
+import math
+
+rospy.init_node('flight')
+
+bridge = CvBridge()
+
+get_telemetry = rospy.ServiceProxy('get_telemetry', srv.GetTelemetry)
+navigate = rospy.ServiceProxy('navigate', srv.Navigate)
+navigate_global = rospy.ServiceProxy('navigate_global', srv.NavigateGlobal)
+set_position = rospy.ServiceProxy('set_position', srv.SetPosition)
+set_velocity = rospy.ServiceProxy('set_velocity', srv.SetVelocity)
+set_attitude = rospy.ServiceProxy('set_attitude', srv.SetAttitude)
+set_rates = rospy.ServiceProxy('set_rates', srv.SetRates)
+land = rospy.ServiceProxy('land', Trigger)
+set_effect = rospy.ServiceProxy('led/set_effect', SetLEDEffect)  # define proxy to ROS-service
+
+def navigate_wait(x=0, y=0, z=1, speed=0.5, frame_id='aruco_map', auto_arm=False, tolerance=0.2):
+    navigate(x=x, y=y, z=z, speed=speed, frame_id=frame_id, auto_arm=auto_arm)
+
+    while not rospy.is_shutdown():
+        telem = get_telemetry(frame_id='navigate_target')
+        telem_auto = get_telemetry()
+
+        if math.sqrt(telem.x ** 2 + telem.y ** 2 + telem.z ** 2) < tolerance:
+            rospy.sleep(1)
+            print("REACHED | X = {} | Y = {}".format(telem_auto.x, telem_auto.y))
+            break
+
+        rospy.sleep(0.2)
+
+qr_code = ''
+def image_callback(data):
+    global qr_code
+    cv_image = bridge.imgmsg_to_cv2(data, 'bgr8')
+    barcodes = pyzbar.decode(cv_image)
+    for barcode in barcodes:
+        qr_code = barcode.data.decode("utf-8")
+        print("QR = ", qr_code)
+        # Если же вы хотите, чтобы он написал 1 раз, qr_code
+        # то пишем print("QR = ", qr_code) 
+        # уже после while qr_code==''...
+
+image_sub = rospy.Subscriber("main_camera/image_raw", Image, image_callback, queue_size=1)
+# Если у вас включен throttle кадров, то пишем вместо image_raw - image_raw_throttled
+
+def main():
+    print("WE'RE GOING TO START")
+    navigate_wait(z=1, speed=1, frame_id='body', auto_arm=True)
+    navigate_wait(x=1) # Тут вы выбираете уже свой путь, какой Aruco вы поменяли
+    
+    # Можно так же сделать дополнительную проверку, если не находит
+    # то добавить i в цикл, по типу:
+    # i = 0
+    # while i < 50 and qr_code == '' and not rospy.is_shutdown()
+    #   rospy.sleep(0.4)
+    #   i++
+    while qr_code == '' and not rospy.is_shutdown():
+        rospy.sleep(0.4)
+
+    QR_detected = qr_code.split()
+    colors = list(map(str, QR_detected))
+    for i in range(len(colors)):
+        if colors[i] == 'red':
+            set_effect(r=255, g=0, b=0)
+        if colors[i] == 'yellow':
+            set_effect(r=255, g=255, b=0)
+        if colors[i] == 'green':
+            set_effect(r=0, g=255, b=0)
+        if colors[i] == 'blue':
+            set_effect(r=0, g=0, b=255)
+
+        print("CHANGING COLOR")
+
+        rospy.sleep(3)
+
+
+    land()
+
+if __name__ == "__main__":
+    main()
